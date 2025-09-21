@@ -508,13 +508,47 @@ namespace OXGaming.TibiaAPI.Network
 
                 var data = PostAsync(clientRequest).Result;
                 var response = string.Empty;
+                //using (var compressedStream = new MemoryStream(data))
+                //using (var zipStream = new GZipStream(compressedStream, CompressionMode.Decompress))
+                //using (var resultStream = new MemoryStream())
+                //{
+                //    zipStream.CopyTo(resultStream);
+                //    response = Encoding.UTF8.GetString(resultStream.ToArray());
+                //}
+
+                // 15.00 version
                 using (var compressedStream = new MemoryStream(data))
-                using (var zipStream = new GZipStream(compressedStream, CompressionMode.Decompress))
                 using (var resultStream = new MemoryStream())
                 {
-                    zipStream.CopyTo(resultStream);
+                    // Try to detect compression
+                    if (data.Length >= 2 && data[0] == 0x1f && data[1] == 0x8b)
+                    {
+                        // GZip
+                        using (var gzip = new GZipStream(compressedStream, CompressionMode.Decompress))
+                            gzip.CopyTo(resultStream);
+                    }
+                    else if (data.Length >= 3 && data[0] == 0x78)
+                    {
+                        // Deflate (zlib)
+                        using (var deflate = new DeflateStream(compressedStream, CompressionMode.Decompress))
+                            deflate.CopyTo(resultStream);
+                    }
+                    else if (data.Length >= 3 && data[0] == 0x8b && data[1] == 0x42)
+                    {
+                        // Brotli (optional check, depends on server)
+                        using (var brotli = new BrotliStream(compressedStream, CompressionMode.Decompress))
+                            brotli.CopyTo(resultStream);
+                    }
+                    else
+                    {
+                        // No compression
+                        compressedStream.CopyTo(resultStream);
+                    }
+
                     response = Encoding.UTF8.GetString(resultStream.ToArray());
                 }
+
+                // 15.00 version
 
                 if (string.IsNullOrEmpty(response)) {
                     // This can happen with Open-Tibia servers where their login service doesn't handle all
