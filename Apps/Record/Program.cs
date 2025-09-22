@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 
 using OXGaming.TibiaAPI;
 using OXGaming.TibiaAPI.Constants;
@@ -42,6 +43,9 @@ namespace Record
         static string _gameServerHost = "127.0.0.1";
         static int _gameServerPort = 7172;
         static bool _enableRecording = false;
+        static bool _useLocalServer = false;
+        static bool _startTestServer = false;
+        static SimpleTestServer _testServer;
 
         static int _httpPort = 7171;
 
@@ -109,6 +113,22 @@ namespace Record
                             }
                         }
                         break;
+                    case "--local":
+                        {
+                            if (bool.TryParse(splitArg[1], out var useLocal))
+                            {
+                                _useLocalServer = useLocal;
+                            }
+                        }
+                        break;
+                    case "--testserver":
+                        {
+                            if (bool.TryParse(splitArg[1], out var startTest))
+                            {
+                                _startTestServer = startTest;
+                            }
+                        }
+                        break;
                     case "--loglevel":
                         {
                             _logLevel = Logger.ConvertToLogLevel(splitArg[1]);
@@ -125,7 +145,7 @@ namespace Record
             }
         }
 
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
             try
             {
@@ -145,6 +165,24 @@ namespace Record
                 Console.WriteLine($"Parsed gameServerHost = '{_gameServerHost}'");
                 Console.WriteLine($"Parsed gameServerPort = {_gameServerPort}");
                 Console.WriteLine($"Parsed enableRecording = {_enableRecording}");
+                Console.WriteLine($"Parsed useLocalServer = {_useLocalServer}");
+                Console.WriteLine($"Parsed startTestServer = {_startTestServer}");
+
+                // Start test server if requested
+                if (_startTestServer)
+                {
+                    _testServer = new SimpleTestServer(_gameServerPort);
+                    Console.WriteLine($"Starting test server on port {_gameServerPort}...");
+                    _ = Task.Run(async () => await _testServer.Start());
+                    await Task.Delay(1000); // Give server time to start
+                }
+
+                if (_useLocalServer)
+                {
+                    Console.WriteLine("WARNING: Local server mode enabled!");
+                    Console.WriteLine($"Make sure your server is running on {_gameServerHost}:{_gameServerPort}");
+                    Console.WriteLine("The proxy will attempt to redirect connections to your local server.");
+                }
 
                 using (_client = new Client(_tibiaDirectory))
                 {
@@ -175,6 +213,15 @@ namespace Record
                     _client.Logger.Level = _logLevel;
                     _client.Logger.Output = _logOutput;
 
+                    // Configure local server override if enabled
+                    if (_useLocalServer)
+                    {
+                        _client.Connection.UseLocalServer = true;
+                        _client.Connection.LocalServerHost = _gameServerHost;
+                        _client.Connection.LocalServerPort = _gameServerPort;
+                        Console.WriteLine($"Local server override enabled: {_gameServerHost}:{_gameServerPort}");
+                    }
+
                     _client.Connection.OnReceivedClientMessage += Proxy_OnReceivedClientMessage;
                     _client.Connection.OnReceivedServerMessage += Proxy_OnReceivedServerMessage;
 
@@ -203,6 +250,12 @@ namespace Record
 
         private static void Shutdown()
         {
+            if (_testServer != null)
+            {
+                _testServer.Stop();
+                Console.WriteLine("Test server stopped.");
+            }
+
             if (_client != null)
             {
                 _client.StopConnection();
