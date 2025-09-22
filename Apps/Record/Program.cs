@@ -39,6 +39,9 @@ namespace Record
 
         static string _loginWebService = string.Empty;
         static string _tibiaDirectory = string.Empty;
+        static string _gameServerHost = "127.0.0.1";
+        static int _gameServerPort = 7172;
+        static bool _enableRecording = false;
 
         static int _httpPort = 7171;
 
@@ -82,6 +85,30 @@ namespace Record
                             _loginWebService = splitArg[1];
                         }
                         break;
+                    case "-s":
+                    case "--server":
+                        {
+                            _gameServerHost = splitArg[1];
+                        }
+                        break;
+                    case "-sp":
+                    case "--serverport":
+                        {
+                            if (int.TryParse(splitArg[1], out var serverPort))
+                            {
+                                _gameServerPort = serverPort;
+                            }
+                        }
+                        break;
+                    case "-r":
+                    case "--record":
+                        {
+                            if (bool.TryParse(splitArg[1], out var record))
+                            {
+                                _enableRecording = record;
+                            }
+                        }
+                        break;
                     case "--loglevel":
                         {
                             _logLevel = Logger.ConvertToLogLevel(splitArg[1]);
@@ -115,23 +142,35 @@ namespace Record
                 Console.WriteLine($"Parsed tibiaDirectory = '{_tibiaDirectory}'");
                 Console.WriteLine($"Parsed loginWebService = '{_loginWebService}'");
                 Console.WriteLine($"Parsed httpPort = {_httpPort}");
+                Console.WriteLine($"Parsed gameServerHost = '{_gameServerHost}'");
+                Console.WriteLine($"Parsed gameServerPort = {_gameServerPort}");
+                Console.WriteLine($"Parsed enableRecording = {_enableRecording}");
 
                 using (_client = new Client(_tibiaDirectory))
                 {
-                    var utcNow = DateTime.UtcNow;
-                    var filename = $"{utcNow.Day}_{utcNow.Month}_{utcNow.Year}__{utcNow.Hour}_{utcNow.Minute}_{utcNow.Second}.oxr";
-                    var recordingDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Recordings");
-                    if (!Directory.Exists(recordingDirectory))
-                    {
-                        Directory.CreateDirectory(recordingDirectory);
-                    }
-
                     Console.CancelKeyPress += Console_CancelKeyPress;
 
-                    _fileStream = new FileStream(Path.Combine(recordingDirectory, filename), FileMode.Append);
-                    _binaryWriter = new BinaryWriter(_fileStream);
+                    // Only setup recording if enabled
+                    if (_enableRecording)
+                    {
+                        var utcNow = DateTime.UtcNow;
+                        var filename = $"{utcNow.Day}_{utcNow.Month}_{utcNow.Year}__{utcNow.Hour}_{utcNow.Minute}_{utcNow.Second}.oxr";
+                        var recordingDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Recordings");
+                        if (!Directory.Exists(recordingDirectory))
+                        {
+                            Directory.CreateDirectory(recordingDirectory);
+                        }
 
-                    _binaryWriter.Write(_client.Version);
+                        _fileStream = new FileStream(Path.Combine(recordingDirectory, filename), FileMode.Append);
+                        _binaryWriter = new BinaryWriter(_fileStream);
+                        _binaryWriter.Write(_client.Version);
+                        
+                        Console.WriteLine($"Recording enabled. Saving to: {filename}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Recording disabled. Acting as proxy only.");
+                    }
 
                     _client.Logger.Level = _logLevel;
                     _client.Logger.Output = _logOutput;
@@ -139,9 +178,9 @@ namespace Record
                     _client.Connection.OnReceivedClientMessage += Proxy_OnReceivedClientMessage;
                     _client.Connection.OnReceivedServerMessage += Proxy_OnReceivedServerMessage;
 
-                    // Disable packet parsing as we only care about the raw, decrypted packets, and speed.
-                    _client.Connection.IsClientPacketParsingEnabled = false;
-                    _client.Connection.IsServerPacketParsingEnabled = false;
+                    // Enable packet parsing for proxy functionality
+                    _client.Connection.IsClientPacketParsingEnabled = true;
+                    _client.Connection.IsServerPacketParsingEnabled = true;
                     _client.StartConnection(httpPort: _httpPort, loginWebService: _loginWebService);
 
                     while (Console.ReadLine() != "quit") { }
@@ -172,7 +211,7 @@ namespace Record
                 _client.Connection.OnReceivedServerMessage -= Proxy_OnReceivedServerMessage;
             }
 
-            if (_fileWriteThread != null)
+            if (_enableRecording && _fileWriteThread != null)
             {
                 // Block the application from shutting down until the file-write thread
                 // finishes writing all incoming packets to disk. This is safe to do as
@@ -198,12 +237,18 @@ namespace Record
 
         private static void Proxy_OnReceivedClientMessage(byte[] data)
         {
-            QueueMessage(PacketType.Client, data);
+            if (_enableRecording)
+            {
+                QueueMessage(PacketType.Client, data);
+            }
         }
 
         private static void Proxy_OnReceivedServerMessage(byte[] data)
         {
-            QueueMessage(PacketType.Server, data);
+            if (_enableRecording)
+            {
+                QueueMessage(PacketType.Server, data);
+            }
         }
 
         private static void QueueMessage(PacketType packetType, byte[] data)
