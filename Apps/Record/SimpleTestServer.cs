@@ -79,20 +79,10 @@ namespace Record
                             Console.WriteLine($"  Full packet: {BitConverter.ToString(buffer, 0, Math.Min(bytesRead, (int)packetLength + 2))}");
                         }
 
-                        // Simulate the same issue - send a response claiming to be longer than it is
-                        // This will help test if the proxy can handle malformed packets
-                        var malformedResponse = new byte[] { 
-                            0x8D, 0x03, // Claims to be 909 bytes
-                            0x0A,       // Packet type
-                            0x01, 0x1F, 0x36, 0x79, 0xD1, 0x68, 0x8B, 0x71, 0x00, 0x00, 0x00, 0x00 
-                        }; // But only 15 bytes total
-                        
-                        await stream.WriteAsync(malformedResponse, 0, malformedResponse.Length);
-                        Console.WriteLine($"Sent malformed response (claims 909 bytes, actually {malformedResponse.Length}): {BitConverter.ToString(malformedResponse)}");
-                        
-                        // Close connection after sending malformed packet to simulate server behavior
-                        Console.WriteLine("Closing connection to simulate server behavior");
-                        break;
+                        // Send a simple proper response instead of malformed one
+                        var response = new byte[] { 0x04, 0x00, 0x0A, 0x01 }; // Simple 4-byte packet
+                        await stream.WriteAsync(response, 0, response.Length);
+                        Console.WriteLine($"Sent response: {BitConverter.ToString(response)}");
                     }
                     else
                     {
@@ -101,7 +91,14 @@ namespace Record
                         await stream.WriteAsync(response, 0, response.Length);
                         Console.WriteLine($"Sent simple response: {BitConverter.ToString(response)}");
                     }
-                }
+                    
+                    // Try to interpret as string if it contains printable characters
+                    var text = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    var printableChars = text.Count(c => char.IsLetterOrDigit(c) || char.IsPunctuation(c) || char.IsWhiteSpace(c));
+                    if (printableChars > bytesRead / 2)
+                    {
+                        Console.WriteLine($"  Text: {text.Replace("\n", "\\n").Replace("\r", "\\r").Replace("\0", "\\0")}");
+                    }
                 }
             }
             catch (Exception ex)
