@@ -74,13 +74,13 @@ namespace OXGaming.TibiaAPI.Network
         public event ReceivedMessageEventHandler OnReceivedServerMessage;
         public ConnectionState ConnectionState { get; set; } = ConnectionState.Disconnected;
 
-        public bool IsClientPacketDecryptionEnabled { get; set; } = true;
+        public bool IsClientPacketDecryptionEnabled { get; set; } = false;
         public bool IsClientPacketModificationEnabled { get; set; } = false;
-        public bool IsClientPacketParsingEnabled { get; set; } = true;
-        public bool IsServerPacketDecryptionEnabled { get; set; } = true;
+        public bool IsClientPacketParsingEnabled { get; set; } = false;
+        public bool IsServerPacketDecryptionEnabled { get; set; } = false;
         public bool IsServerPacketCompressionEnabled { get; set; } = false;
         public bool IsServerPacketModificationEnabled { get; set; } = false;
-        public bool IsServerPacketParsingEnabled { get; set; } = true;
+        public bool IsServerPacketParsingEnabled { get; set; } = false;
 
         // Server override properties for local development
         public bool UseLocalServer { get; set; } = false;
@@ -723,56 +723,29 @@ namespace OXGaming.TibiaAPI.Network
 
                 var protocol = (int)ar.AsyncState;
                 if (protocol == 0) {
+                    // For the first packet, we still need to extract XTEA key for compatibility
+                    // but we'll forward the raw data unchanged
                     var rsaStartIndex = 31;
-
-                    _rsa.OpenTibiaDecrypt(_clientInMessage, rsaStartIndex);
-                    _clientInMessage.Seek(rsaStartIndex, SeekOrigin.Begin);
-                    if (_clientInMessage.ReadByte() != 0)
-                        throw new Exception("[Connection.BeginReceiveClientCallback] RSA decryption failed.");
-
-                    OnReceivedClientMessage?.Invoke(_clientInMessage.GetData());
-
-                    if (IsClientPacketParsingEnabled) {
-                        _clientOutMessage.Reset();
-                        ParseClientMessage(_client, _clientInMessage, _clientOutMessage);
-                    } else {
+                    
+                    // Just extract XTEA key without modifying the packet
+                    var tempMessage = new NetworkMessage(_client);
+                    Array.Copy(_clientInMessage.GetBuffer(), tempMessage.GetBuffer(), (int)_clientInMessage.Size);
+                    tempMessage.Size = _clientInMessage.Size;
+                    
+                    _rsa.OpenTibiaDecrypt(tempMessage, rsaStartIndex);
+                    tempMessage.Seek(rsaStartIndex, SeekOrigin.Begin);
+                    if (tempMessage.ReadByte() == 0) {
+                        // Extract XTEA key for compatibility
                         _xteaKey = new uint[4];
                         for (var i = 0; i < 4; ++i)
-                            _xteaKey[i] = _clientInMessage.ReadUInt32();
+                            _xteaKey[i] = tempMessage.ReadUInt32();
                     }
-
-                    // If the user supplied a login web service address,
-                    // it's safe to assume it's an Open-Tibia server.
-                    if (string.IsNullOrEmpty(_loginWebService))
-                        _rsa.TibiaEncrypt(_clientInMessage, rsaStartIndex);
-                    else
-                        _rsa.OpenTibiaEncrypt(_clientInMessage, rsaStartIndex);
-
+                    
+                    // Forward the original unmodified packet
                     SendToServer(_clientInMessage.GetData());
                 } else {
-                    if (IsClientPacketDecryptionEnabled) {
-                        _clientInMessage.PrepareToParse(_xteaKey);
-                        OnReceivedClientMessage?.Invoke(_clientInMessage.GetData());
-                    }
-
-                    if (IsClientPacketParsingEnabled) {
-                        _clientOutMessage.Reset();
-                        _clientOutMessage.SequenceNumber = _clientInMessage.SequenceNumber;
-
-                        ParseClientMessage(_client, _clientInMessage, _clientOutMessage);
-
-                        if (IsClientPacketModificationEnabled && _client.Logger.Level == Logger.LogLevel.Debug) {
-                            _client.Logger.Debug($"In Size: {_clientInMessage.Size}, Out Size: {_clientOutMessage.Size}");
-                            _client.Logger.Debug($"In Data: {BitConverter.ToString(_clientInMessage.GetData()).Replace('-', ' ')}");
-                            _client.Logger.Debug($"Out Data: {BitConverter.ToString(_clientOutMessage.GetData()).Replace('-', ' ')}");
-                        }
-                        SendToServer(IsClientPacketModificationEnabled ? _clientOutMessage : _clientInMessage);
-                    } else {
-                        if (IsClientPacketDecryptionEnabled)
-                            _clientInMessage.PrepareToSend(_xteaKey);
-						
-                        SendToServer(_clientInMessage.GetData());
-                    }
+                    // For all other packets, just forward raw data
+                    SendToServer(_clientInMessage.GetData());
                 }
 
                 _clientSocket.BeginReceive(_clientInMessage.GetBuffer(), 0, 2, SocketFlags.None, new AsyncCallback(BeginReceiveClientCallback), 1);
@@ -812,40 +785,14 @@ namespace OXGaming.TibiaAPI.Network
                     var read = _serverSocket.Receive(_serverInMessage.GetBuffer(), count, (int)(_serverInMessage.Size - count), SocketFlags.None);
                     if (read <= 0) {
                         _client.Logger.Error($"[Connection.BeginReceiveServerCallback] Server connection broken while reading packet.");
-                        _client.Logger.Error($"Expected packet size: {_serverInMessage.Size} bytes, received: {count} bytes");
-                        _client.Logger.Error($"Partial data: {BitConverter.ToString(_serverInMessage.GetBuffer(), 0, count)}");
-                        _client.Logger.Error($"This indicates your server at the remote location has a protocol implementation bug.");
-                        _client.Logger.Error($"The server claims to send {_serverInMessage.Size - 2} bytes but closes connection after {count - 2} bytes.");
                         throw new Exception("[Connection.BeginReceiveServerCallback] Server connection broken.");
                     }
 
                     count += read;
                 }
 
-                if (IsServerPacketDecryptionEnabled) {
-                    _serverInMessage.PrepareToParse(_xteaKey, _zStream);
-                    OnReceivedServerMessage?.Invoke(_serverInMessage.GetData());
-                }
-
-                if (IsServerPacketParsingEnabled) {
-                    _serverOutMessage.Reset();
-                    _serverOutMessage.SequenceNumber = _serverInMessage.SequenceNumber;
-
-                    ParseServerMessage(_client, _serverInMessage, _serverOutMessage);
-
-                    if (IsServerPacketModificationEnabled && _client.Logger.Level == Logger.LogLevel.Debug) {
-                        _client.Logger.Debug($"In Size: {_serverInMessage.Size}, Out Size: {_serverOutMessage.Size}");
-                        _client.Logger.Debug($"In Data: {BitConverter.ToString(_serverInMessage.GetData()).Replace('-', ' ')}");
-                        _client.Logger.Debug($"Out Data: {BitConverter.ToString(_serverOutMessage.GetData()).Replace('-', ' ')}");
-                    }
-
-                    SendToClient(IsServerPacketModificationEnabled ? _serverOutMessage : _serverInMessage);
-                } else {
-                    if (IsServerPacketDecryptionEnabled)
-                        _serverInMessage.PrepareToSend(_xteaKey, IsServerPacketCompressionEnabled ? _zStream : null);
-
-                    SendToClient(_serverInMessage.GetData());
-                }
+                // Simply forward raw server data without any processing
+                SendToClient(_serverInMessage.GetData());
 
                 _serverSocket.BeginReceive(_serverInMessage.GetBuffer(), 0, 2, SocketFlags.None, new AsyncCallback(BeginReceiveServerCallback), 1);
             } catch (ObjectDisposedException) {
