@@ -82,6 +82,11 @@ namespace OXGaming.TibiaAPI.Network
         public bool IsServerPacketModificationEnabled { get; set; } = false;
         public bool IsServerPacketParsingEnabled { get; set; } = true;
 
+        // Server override properties for local development
+        public bool UseLocalServer { get; set; } = false;
+        public string LocalServerHost { get; set; } = "127.0.0.1";
+        public int LocalServerPort { get; set; } = 7172;
+
         /// <summary>
         /// Initializes a new instance of the <see cref="Connection"/> class that acts as a proxy
         /// between the Tibia client and the game server.
@@ -663,7 +668,16 @@ namespace OXGaming.TibiaAPI.Network
                         _clientSocket.BeginReceive(_clientInMessage.GetBuffer(), 0, 2, SocketFlags.None, new AsyncCallback(BeginReceiveClientCallback), 0);
 
                         _serverSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-                        _serverSocket.Connect((string)world.externaladdressprotected, (int)world.externalportprotected);
+                        
+                        // Use local server override if enabled
+                        if (UseLocalServer) {
+                            _client.Logger.Info($"Connecting to local server: {LocalServerHost}:{LocalServerPort}");
+                            _serverSocket.Connect(LocalServerHost, LocalServerPort);
+                        } else {
+                            _client.Logger.Info($"Connecting to game server: {(string)world.externaladdressprotected}:{(int)world.externalportprotected}");
+                            _serverSocket.Connect((string)world.externaladdressprotected, (int)world.externalportprotected);
+                        }
+                        
                         _serverSocket.Send(_clientInMessage.GetBuffer(), 0, count, SocketFlags.None);
                         _serverSocket.BeginReceive(_serverInMessage.GetBuffer(), 0, 2, SocketFlags.None, new AsyncCallback(BeginReceiveServerCallback), 0);
                         return;
