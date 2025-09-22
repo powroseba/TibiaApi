@@ -712,52 +712,84 @@ namespace OXGaming.TibiaAPI.Network
                     return;
                 }
 
-                _clientInMessage.Size = (uint)BitConverter.ToUInt16(_clientInMessage.GetBuffer(), 0) + 2;
-                while (count < _clientInMessage.Size) {
-                    var read = _clientSocket.Receive(_clientInMessage.GetBuffer(), count, (int)(_clientInMessage.Size - count), SocketFlags.None);
-                    if (read <= 0)
-                        throw new Exception("[Connection.BeginReceiveClientCallback] Client connection broken.");
-
-                    count += read;
-                }
-
                 var protocol = (int)ar.AsyncState;
                 if (protocol == 0) {
-                    // For the first packet, we still need to extract XTEA key for compatibility
-                    // but we'll forward the raw data unchanged
+                    // First packet after world name - handle specially for login
+                    _clientInMessage.Size = (uint)BitConverter.ToUInt16(_clientInMessage.GetBuffer(), 0) + 2;
+                    while (count < _clientInMessage.Size) {
+                        var read = _clientSocket.Receive(_clientInMessage.GetBuffer(), count, (int)(_clientInMessage.Size - count), SocketFlags.None);
+                        if (read <= 0)
+                            throw new Exception("[Connection.BeginReceiveClientCallback] Client connection broken.");
+
+                        count += read;
+                    }
+
+                    // Extract XTEA key for compatibility but forward original packet
                     var rsaStartIndex = 31;
-                    
-                    // Just extract XTEA key without modifying the packet
                     var tempMessage = new NetworkMessage(_client);
                     Array.Copy(_clientInMessage.GetBuffer(), tempMessage.GetBuffer(), (int)_clientInMessage.Size);
                     tempMessage.Size = _clientInMessage.Size;
                     
-                    _rsa.OpenTibiaDecrypt(tempMessage, rsaStartIndex);
-                    tempMessage.Seek(rsaStartIndex, SeekOrigin.Begin);
-                    if (tempMessage.ReadByte() == 0) {
-                        // Extract XTEA key for compatibility
-                        _xteaKey = new uint[4];
-                        for (var i = 0; i < 4; ++i)
-                            _xteaKey[i] = tempMessage.ReadUInt32();
+                    try {
+                        _rsa.OpenTibiaDecrypt(tempMessage, rsaStartIndex);
+                        tempMessage.Seek(rsaStartIndex, SeekOrigin.Begin);
+                        if (tempMessage.ReadByte() == 0) {
+                            _xteaKey = new uint[4];
+                            for (var i = 0; i < 4; ++i)
+                                _xteaKey[i] = tempMessage.ReadUInt32();
+                        }
+                    } catch {
+                        // If decryption fails, just use dummy XTEA key
+                        _xteaKey = new uint[] { 0, 0, 0, 0 };
                     }
                     
                     // Forward the original unmodified packet
                     SendToServer(_clientInMessage.GetData());
+                    
+                    // Switch to raw byte forwarding mode
+                    _clientSocket.BeginReceive(_clientInMessage.GetBuffer(), 0, _clientInMessage.GetBuffer().Length, SocketFlags.None, new AsyncCallback(BeginReceiveClientRawCallback), null);
                 } else {
-                    // For all other packets, just forward raw data
+                    // This shouldn't happen in the new flow
                     SendToServer(_clientInMessage.GetData());
                 }
-
-                _clientSocket.BeginReceive(_clientInMessage.GetBuffer(), 0, 2, SocketFlags.None, new AsyncCallback(BeginReceiveClientCallback), 1);
             } catch (ObjectDisposedException) {
-                // This exception can occur when the player logs out of their character (e.g., Ctrl+L).
                 ResetConnection();
             } catch (SocketException) {
-                // This exception can happen if the client, forcefully, closes the connection (e.g., killing the client process).
                 ResetConnection();
             } catch (Exception ex) {
                 _client.Logger.Error(ex.ToString());
                 _client.Logger.Error($"Data: {BitConverter.ToString(_clientInMessage.GetData()).Replace('-', ' ')}");
+            }
+        }
+
+        /// <summary>
+        /// Handles raw client data forwarding after login packet
+        /// </summary>
+        private void BeginReceiveClientRawCallback(IAsyncResult ar)
+        {
+            try {
+                if (_clientSocket == null)
+                    return;
+
+                var count = _clientSocket.EndReceive(ar);
+                if (count <= 0) {
+                    ResetConnection();
+                    return;
+                }
+
+                // Forward raw data directly
+                var data = new byte[count];
+                Array.Copy(_clientInMessage.GetBuffer(), data, count);
+                SendToServer(data);
+
+                // Continue reading raw data
+                _clientSocket.BeginReceive(_clientInMessage.GetBuffer(), 0, _clientInMessage.GetBuffer().Length, SocketFlags.None, new AsyncCallback(BeginReceiveClientRawCallback), null);
+            } catch (ObjectDisposedException) {
+                ResetConnection();
+            } catch (SocketException) {
+                ResetConnection();
+            } catch (Exception ex) {
+                _client.Logger.Error(ex.ToString());
             }
         }
 
@@ -779,22 +811,30 @@ namespace OXGaming.TibiaAPI.Network
                     return;
                 }
 
-                _serverInMessage.Size = (uint)BitConverter.ToUInt16(_serverInMessage.GetBuffer(), 0) + 2;
-                
-                while (count < _serverInMessage.Size) {
-                    var read = _serverSocket.Receive(_serverInMessage.GetBuffer(), count, (int)(_serverInMessage.Size - count), SocketFlags.None);
-                    if (read <= 0) {
-                        _client.Logger.Error($"[Connection.BeginReceiveServerCallback] Server connection broken while reading packet.");
-                        throw new Exception("[Connection.BeginReceiveServerCallback] Server connection broken.");
+                var protocol = (int)ar.AsyncState;
+                if (protocol == 0) {
+                    // First packet from server - handle with packet structure
+                    _serverInMessage.Size = (uint)BitConverter.ToUInt16(_serverInMessage.GetBuffer(), 0) + 2;
+                    
+                    while (count < _serverInMessage.Size) {
+                        var read = _serverSocket.Receive(_serverInMessage.GetBuffer(), count, (int)(_serverInMessage.Size - count), SocketFlags.None);
+                        if (read <= 0) {
+                            _client.Logger.Error($"[Connection.BeginReceiveServerCallback] Server connection broken while reading packet.");
+                            throw new Exception("[Connection.BeginReceiveServerCallback] Server connection broken.");
+                        }
+
+                        count += read;
                     }
 
-                    count += read;
+                    // Forward raw server data
+                    SendToClient(_serverInMessage.GetData());
+                    
+                    // Switch to raw forwarding mode for all subsequent packets
+                    _serverSocket.BeginReceive(_serverInMessage.GetBuffer(), 0, _serverInMessage.GetBuffer().Length, SocketFlags.None, new AsyncCallback(BeginReceiveServerRawCallback), null);
+                } else {
+                    // This shouldn't happen in the new flow
+                    SendToClient(_serverInMessage.GetData());
                 }
-
-                // Simply forward raw server data without any processing
-                SendToClient(_serverInMessage.GetData());
-
-                _serverSocket.BeginReceive(_serverInMessage.GetBuffer(), 0, 2, SocketFlags.None, new AsyncCallback(BeginReceiveServerCallback), 1);
             } catch (ObjectDisposedException) {
                 // This exception can occur if Stop() is called.
             } catch (SocketException) {
@@ -803,6 +843,38 @@ namespace OXGaming.TibiaAPI.Network
             } catch (Exception ex) {
                 _client.Logger.Error(ex.ToString());
                 _client.Logger.Error($"Data: {BitConverter.ToString(_serverInMessage.GetData()).Replace('-', ' ')}");
+            }
+        }
+
+        /// <summary>
+        /// Handles raw server data forwarding after first packet
+        /// </summary>
+        private void BeginReceiveServerRawCallback(IAsyncResult ar)
+        {
+            try {
+                if (_serverSocket == null)
+                    return;
+
+                var count = _serverSocket.EndReceive(ar);
+                if (count <= 0) {
+                    ResetConnection();
+                    return;
+                }
+
+                // Forward raw data directly
+                var data = new byte[count];
+                Array.Copy(_serverInMessage.GetBuffer(), data, count);
+                SendToClient(data);
+
+                // Continue reading raw data
+                _serverSocket.BeginReceive(_serverInMessage.GetBuffer(), 0, _serverInMessage.GetBuffer().Length, SocketFlags.None, new AsyncCallback(BeginReceiveServerRawCallback), null);
+            } catch (ObjectDisposedException) {
+                // This exception can occur if Stop() is called.
+            } catch (SocketException) {
+                // This exception can happen if the server, forcefully, closes the connection.
+                ResetConnection();
+            } catch (Exception ex) {
+                _client.Logger.Error(ex.ToString());
             }
         }
 
