@@ -569,10 +569,23 @@ namespace OXGaming.TibiaAPI.Network
                     // Login data is the only thing we have to modify, everything else can be piped through.
                     dynamic loginData = JsonConvert.DeserializeObject(response);
                     if (loginData != null && loginData.session != null) {
+                        _client.Logger.Debug("Login successful, processing world list:");
+                        
+                        // Store the original login data so when the Tibia client tries to connect to a game world
+                        // the server socket can recall the address and port to connect to.
+                        _loginData = JsonConvert.DeserializeObject(response);
+                        
+                        // Log original server addresses
+                        foreach (var world in _loginData.playdata.worlds) {
+                            _client.Logger.Debug($"Original world '{world.name}': {world.externaladdressprotected}:{world.externalportprotected}");
+                        }
+                        
                         // Change the address and port of each game world to that of the TCP listener so that
                         // the Tibia client connects to the TCP listener instead of a game world.
                         var address = ((IPEndPoint)_tcpListener.LocalEndpoint).Address.ToString();
                         var port = ((IPEndPoint)_tcpListener.LocalEndpoint).Port;
+                        _client.Logger.Debug($"Redirecting client to proxy: {address}:{port}");
+                        
                         foreach (var world in loginData.playdata.worlds) {
                             world.externaladdressprotected = address;
                             world.externaladdressunprotected = address;
@@ -580,9 +593,6 @@ namespace OXGaming.TibiaAPI.Network
                             world.externalportunprotected = port;
                         }
 
-                        // Store the original login data so when the Tibia client tries to connect to a game world
-                        // the server socket can recall the address and port to connect to.
-                        _loginData = JsonConvert.DeserializeObject(response);
                         response = JsonConvert.SerializeObject(loginData);
                     }
                 } catch (JsonReaderException) {
@@ -672,12 +682,27 @@ namespace OXGaming.TibiaAPI.Network
                         // Use local server override if enabled
                         if (UseLocalServer) {
                             _client.Logger.Info($"Connecting to local server: {LocalServerHost}:{LocalServerPort}");
-                            _serverSocket.Connect(LocalServerHost, LocalServerPort);
+                            try {
+                                _serverSocket.Connect(LocalServerHost, LocalServerPort);
+                                _client.Logger.Info("Successfully connected to local server");
+                            } catch (Exception ex) {
+                                _client.Logger.Error($"Failed to connect to local server: {ex.Message}");
+                                throw;
+                            }
                         } else {
-                            _client.Logger.Info($"Connecting to game server: {(string)world.externaladdressprotected}:{(int)world.externalportprotected}");
-                            _serverSocket.Connect((string)world.externaladdressprotected, (int)world.externalportprotected);
+                            var serverHost = (string)world.externaladdressprotected;
+                            var serverPort = (int)world.externalportprotected;
+                            _client.Logger.Info($"Connecting to game server: {serverHost}:{serverPort}");
+                            try {
+                                _serverSocket.Connect(serverHost, serverPort);
+                                _client.Logger.Info("Successfully connected to game server");
+                            } catch (Exception ex) {
+                                _client.Logger.Error($"Failed to connect to game server {serverHost}:{serverPort}: {ex.Message}");
+                                throw;
+                            }
                         }
                         
+                        _client.Logger.Debug($"Sending login packet ({count} bytes) to server");
                         _serverSocket.Send(_clientInMessage.GetBuffer(), 0, count, SocketFlags.None);
                         _serverSocket.BeginReceive(_serverInMessage.GetBuffer(), 0, 2, SocketFlags.None, new AsyncCallback(BeginReceiveServerCallback), 0);
                         return;
@@ -797,20 +822,40 @@ namespace OXGaming.TibiaAPI.Network
         private void BeginReceiveServerCallback(IAsyncResult ar)
         {
             try {
-                if (_serverSocket == null)
+                if (_serverSocket == null) {
+                    _client.Logger.Warning("BeginReceiveServerCallback called but _serverSocket is null");
                     return;
+                }
 
                 var count = _serverSocket.EndReceive(ar);
+                _client.Logger.Debug($"Received {count} bytes from server");
+                
                 if (count <= 0) {
+                    _client.Logger.Warning("Server sent 0 bytes, connection likely closed");
                     ResetConnection();
                     return;
                 }
 
                 _serverInMessage.Size = (uint)BitConverter.ToUInt16(_serverInMessage.GetBuffer(), 0) + 2;
+                _client.Logger.Debug($"Expected message size: {_serverInMessage.Size} bytes");
+                
+                if (_serverInMessage.Size > 8192) // Sanity check for packet size
+                {
+                    _client.Logger.Error($"Server sent invalid packet size: {_serverInMessage.Size - 2} bytes (header claims {_serverInMessage.Size - 2}, max expected 8192)");
+                    _client.Logger.Error($"Raw data: {BitConverter.ToString(_serverInMessage.GetBuffer(), 0, count)}");
+                    ResetConnection();
+                    return;
+                }
+                
                 while (count < _serverInMessage.Size) {
                     var read = _serverSocket.Receive(_serverInMessage.GetBuffer(), count, (int)(_serverInMessage.Size - count), SocketFlags.None);
-                    if (read <= 0)
+                    if (read <= 0) {
+                        _client.Logger.Error($"Server connection broken while reading message.");
+                        _client.Logger.Error($"Expected {_serverInMessage.Size} bytes total, received {count} bytes");
+                        _client.Logger.Error($"Partial data: {BitConverter.ToString(_serverInMessage.GetBuffer(), 0, count)}");
+                        _client.Logger.Error($"This suggests the server sent a malformed packet or closed connection unexpectedly");
                         throw new Exception("[Connection.BeginReceiveServerCallback] Server connection broken.");
+                    }
 
                     count += read;
                 }

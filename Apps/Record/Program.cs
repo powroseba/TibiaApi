@@ -168,6 +168,16 @@ namespace Record
                 Console.WriteLine($"Parsed useLocalServer = {_useLocalServer}");
                 Console.WriteLine($"Parsed startTestServer = {_startTestServer}");
 
+                if (!string.IsNullOrEmpty(_loginWebService))
+                {
+                    Console.WriteLine($"Using custom login service: {_loginWebService}");
+                    Console.WriteLine("This will override the default Tibia login service.");
+                }
+                else 
+                {
+                    Console.WriteLine("Using default Tibia login service (https://www.tibia.com/clientservices/loginservice.php)");
+                }
+
                 // Start test server if requested
                 if (_startTestServer)
                 {
