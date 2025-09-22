@@ -808,14 +808,6 @@ namespace OXGaming.TibiaAPI.Network
 
                 _serverInMessage.Size = (uint)BitConverter.ToUInt16(_serverInMessage.GetBuffer(), 0) + 2;
                 
-                // Add validation for packet size to prevent malformed packet issues
-                if (_serverInMessage.Size > 8192) {
-                    _client.Logger.Error($"Server sent invalid packet size: {_serverInMessage.Size - 2} bytes. This suggests a protocol error on the server.");
-                    _client.Logger.Error($"Raw header: {BitConverter.ToString(_serverInMessage.GetBuffer(), 0, Math.Min(count, 10))}");
-                    ResetConnection();
-                    return;
-                }
-                
                 while (count < _serverInMessage.Size) {
                     var read = _serverSocket.Receive(_serverInMessage.GetBuffer(), count, (int)(_serverInMessage.Size - count), SocketFlags.None);
                     if (read <= 0) {

@@ -240,9 +240,20 @@ namespace Record
                     _client.Connection.OnReceivedClientMessage += Proxy_OnReceivedClientMessage;
                     _client.Connection.OnReceivedServerMessage += Proxy_OnReceivedServerMessage;
 
-                    // Enable packet parsing for proxy functionality
-                    _client.Connection.IsClientPacketParsingEnabled = true;
-                    _client.Connection.IsServerPacketParsingEnabled = true;
+                    // For custom servers, we might need to disable packet parsing to avoid protocol conflicts
+                    if (!string.IsNullOrEmpty(_loginWebService))
+                    {
+                        Console.WriteLine("Custom login service detected - disabling server packet parsing for compatibility");
+                        _client.Connection.IsClientPacketParsingEnabled = false;
+                        _client.Connection.IsServerPacketParsingEnabled = false;
+                        _client.Connection.IsServerPacketDecryptionEnabled = false;
+                    }
+                    else
+                    {
+                        // Enable packet parsing for proxy functionality with official servers
+                        _client.Connection.IsClientPacketParsingEnabled = true;
+                        _client.Connection.IsServerPacketParsingEnabled = true;
+                    }
                     _client.StartConnection(httpPort: _httpPort, loginWebService: _loginWebService);
 
                     while (Console.ReadLine() != "quit") { }
